@@ -2,11 +2,11 @@ import 'server-only'
 import type { DocumentSnapshot } from 'firebase-admin/firestore'
 import { RequestRefusal } from '../errors.js'
 import { cancel, claim, expireLeases, newRequest, release, settle } from '../rules.js'
-import { hashToken, mintToken } from '../token.js'
+import { hashToken, mintToken } from './token.js'
 import { KEEP_MS, type AgentRequest, type TokenScope } from '../types.js'
 import type { AgentRequestsHost } from './host.js'
 
-type StoreHost<M extends string> = Pick<AgentRequestsHost<M>, 'db' | 'collection' | 'decl' | 'now'>
+type StoreHost<M extends string> = Pick<AgentRequestsHost<M>, 'db' | 'collection' | 'decl' | 'now' | 'ownsSubject'>
 export interface Claimed { id: string; skill: string; subject: { tile: string; id: string }; note?: string; token: string }
 
 // Firestore refuses undefined, and a rule clears a field by setting it undefined: dropping it here removes it.
@@ -30,11 +30,18 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
   // Settled longer ago than KEEP_MS: nobody lists it, and the agent poll removes it.
   const retired = (r: AgentRequest<M>, t: number) => r.settledAt !== undefined && t - r.settledAt > KEEP_MS
 
+  // A second tap on the same skill and subject returns the request already open (queued or claimed).
   async function ask(member: M, a: { tile: string; id: string; skill: string; note?: string }): Promise<AgentRequest<M>> {
     const ref = rows().doc()
     const r = newRequest({ id: ref.id, member, skill: a.skill, subject: { tile: a.tile, id: a.id }, note: a.note, decl: host.decl(a.tile), now: now() })
-    await ref.set(forStore(r))
-    return r
+    if (host.ownsSubject && !(await host.ownsSubject(member, a.tile, a.id))) throw new RequestRefusal('not found', 404)
+    return host.db().runTransaction(async (tx) => {
+      const snap = await tx.get(rows().where('member', '==', member))
+      const open = snap.docs.map(from).find((x) => (x.state === 'queued' || x.state === 'claimed') && x.skill === a.skill && x.subject.id === a.id)
+      if (open) return open
+      tx.set(ref, forStore(r))
+      return r
+    })
   }
 
   async function cancelRequest(member: M, id: string): Promise<AgentRequest<M>> {

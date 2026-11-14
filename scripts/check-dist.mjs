@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Properties of the BUILT package that no unit test can see, because the tests run the sources:
 //   1. the server entry still refuses to load in a browser bundle (import 'server-only' first);
-//   2. nothing outside dist/server/ mentions server-only, so the root entry stays safe to import anywhere.
+//   2. nothing outside dist/server/ mentions server-only, and nothing outside dist/server/ imports a node: module,
+//      so the root entry stays safe to import anywhere, a browser bundle included.
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +17,10 @@ if (!/^import ['"]server-only['"];?/.test(readFileSync(join(DIST, 'server/index.
 }
 for (const file of walk(DIST).filter((p) => p.endsWith('.js'))) {
   const rel = relative(DIST, file)
-  if (!rel.startsWith(`server${sep}`) && /server-only/.test(readFileSync(file, 'utf8'))) bad.push(`dist/${rel} mentions server-only outside the server entry`)
+  if (rel.startsWith(`server${sep}`)) continue
+  const text = readFileSync(file, 'utf8')
+  if (/server-only/.test(text)) bad.push(`dist/${rel} mentions server-only outside the server entry`)
+  if (/(?:from|import)\s*\(?\s*['"]node:/.test(text)) bad.push(`dist/${rel} imports a node: module outside the server entry`)
 }
 for (const b of bad) console.error(b)
 if (bad.length) process.exit(1)

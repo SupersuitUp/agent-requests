@@ -21,7 +21,7 @@ function setup(signedIn: M | null = 'ana', agentKey: M | null = 'ana') {
 const req = (method: string, body?: unknown, headers: Record<string, string> = {}) =>
   new Request('https://app.example/api/requests', { method, headers: { 'content-type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) })
 const params = (id: string) => ({ params: Promise.resolve({ id }) })
-const ask = (h: ReturnType<typeof setup>['h']) => h.member.POST(req('POST', { tile: 'reflections', id: 'x1', skill: 'write-a-reflection', note: 'warmer' }))
+const ask = (h: ReturnType<typeof setup>['h']) => h.member.POST(req('POST', { kind: 'ask', tile: 'reflections', id: 'x1', skill: 'write-a-reflection', note: 'warmer' }))
 
 describe('the agent requests API', () => {
   it('answers a stranger 403 on the member routes and 401 on the agent routes', async () => {
@@ -107,6 +107,24 @@ describe('the agent requests API', () => {
     expect(a.onDone).not.toHaveBeenCalled()
   })
 
+  it('a missing kind is an ask', async () => {
+    const { h } = setup()
+    expect((await h.member.POST(req('POST', { tile: 'reflections', id: 'x1', skill: 'write-a-reflection' }))).status).toBe(201)
+  })
+
+  it('a failing onDone is logged and the settle still answers 200 with the row done', async () => {
+    const { h, onDone, db } = setup()
+    onDone.mockRejectedValueOnce(new Error('news down'))
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await ask(h)
+    const [c] = (await (await h.agent.GET(req('GET'))).json()).requests
+    const res = await h.agent.POST(req('POST', { state: 'done', result: 'ok' }), params(c.id))
+    expect(res.status).toBe(200)
+    expect(db.peek('reqs', c.id)).toMatchObject({ state: 'done' })
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining(c.id), expect.any(Error))
+    spy.mockRestore()
+  })
+
   it('answers an unknown state or an unreadable body 400', async () => {
     const { h } = setup()
     expect((await h.agent.POST(req('POST', { state: 'sideways' }), params('r'))).status).toBe(400)
@@ -117,7 +135,8 @@ describe('the agent requests API', () => {
   it('cancels from the phone, and only a queued request', async () => {
     const { h } = setup()
     const { id } = await (await ask(h)).json()
-    expect(await (await h.member.POST(req('POST', { cancel: id }))).json()).toMatchObject({ state: 'cancelled' })
-    expect((await h.member.POST(req('POST', { cancel: id }))).status).toBe(409)
+    expect((await h.member.POST(req('POST', { cancel: id }))).status).toBe(400)
+    expect(await (await h.member.POST(req('POST', { kind: 'cancel', id }))).json()).toMatchObject({ state: 'cancelled' })
+    expect((await h.member.POST(req('POST', { kind: 'cancel', id }))).status).toBe(409)
   })
 })

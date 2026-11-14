@@ -2,17 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { createFirestore } from '@supersuit/firestore-double'
 import type { Firestore } from 'firebase-admin/firestore'
 import { createAgentRequestsStore } from './store.js'
-import { hashToken } from '../token.js'
+import { hashToken } from './token.js'
 import { KEEP_MS, LEASE_MS } from '../types.js'
 
 type M = 'ana' | 'ben'
 const decl = { 'write-a-reflection': ['reflections.show', 'reflections.revise'] }
 
-function setup() {
+function setup(owns?: (m: M, tile: string, id: string) => Promise<boolean>) {
   const db = createFirestore()
   let t = 1_000_000
   const clock = { now: () => t, set: (n: number) => { t = n } }
-  const store = createAgentRequestsStore<M>({ db: () => db as unknown as Firestore, collection: 'reqs', decl: () => decl, now: clock.now })
+  const store = createAgentRequestsStore<M>({ db: () => db as unknown as Firestore, collection: 'reqs', decl: () => decl, now: clock.now, ownsSubject: owns })
   return { db, store, clock }
 }
 const ask = (store: ReturnType<typeof setup>['store'], m: M, id = 'x1') => store.ask(m, { tile: 'reflections', id, skill: 'write-a-reflection' })
@@ -125,5 +125,34 @@ describe('the request store', () => {
     expect(db.peek('reqs', r.id)).toBeDefined()
     await store.agentPoll('ana')
     expect(db.peek('reqs', r.id)).toBeUndefined()
+  })
+
+  it('ask twice for the same skill and subject makes one row, queued or claimed', async () => {
+    const { db, store } = setup()
+    const a = await ask(store, 'ana')
+    expect((await ask(store, 'ana')).id).toBe(a.id)
+    expect(db.docs.size).toBe(1)
+    await store.agentPoll('ana')
+    expect((await ask(store, 'ana')).id).toBe(a.id)
+    expect((await ask(store, 'ana', 'other')).id).not.toBe(a.id)
+    expect((await ask(store, 'ben')).id).not.toBe(a.id)
+    await store.settleByAgent('ana', a.id, { state: 'done', result: 'ok' })
+    expect((await ask(store, 'ana')).id).not.toBe(a.id)
+  })
+
+  it('refuses 404 a subject the member does not own, and writes nothing', async () => {
+    const { db, store } = setup(async (m, tile, id) => m === 'ana' && tile === 'reflections' && id === 'mine')
+    await expect(ask(store, 'ana', 'theirs')).rejects.toMatchObject({ status: 404 })
+    await expect(ask(store, 'ben', 'mine')).rejects.toMatchObject({ status: 404 })
+    expect(db.docs.size).toBe(0)
+    expect(await ask(store, 'ana', 'mine')).toMatchObject({ state: 'queued' })
+  })
+
+  it('refuses a tile or skill over 64 characters and an id over 128, with 400', async () => {
+    const { store } = setup()
+    const long = (n: number) => 'a'.repeat(n)
+    await expect(store.ask('ana', { tile: long(65), id: 'x', skill: 'write-a-reflection' })).rejects.toMatchObject({ status: 400 })
+    await expect(store.ask('ana', { tile: 'reflections', id: 'x', skill: long(65) })).rejects.toMatchObject({ status: 400 })
+    await expect(store.ask('ana', { tile: 'reflections', id: long(129), skill: 'write-a-reflection' })).rejects.toMatchObject({ status: 400 })
   })
 })

@@ -15,6 +15,8 @@ export function newRequest<M extends string>(a: {
 }): AgentRequest<M> {
   const verbs = Object.prototype.hasOwnProperty.call(a.decl, a.skill) ? a.decl[a.skill] : undefined
   if (!verbs) throw new RequestRefusal(`${a.skill} is not a skill this tile can ask for`, 400)
+  if (a.subject.tile.length > 64 || a.skill.length > 64) throw new RequestRefusal('a tile or skill name is at most 64 characters', 400)
+  if (a.subject.id.length > 128) throw new RequestRefusal('an id is at most 128 characters', 400)
   if (!a.subject.id || !a.subject.tile) throw new RequestRefusal('say what the request is about', 400)
   const note = typeof a.note === 'string' ? a.note.trim() : undefined
   if (note && note.length > NOTE_MAX) throw new RequestRefusal(`a note is at most ${NOTE_MAX} characters`, 400)

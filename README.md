@@ -32,8 +32,8 @@ npm install @supersuit/agent-requests
 
 Peer: `firebase-admin` 13 for the server entry.
 
-- `@supersuit/agent-requests`: the types and every rule, pure (`newRequest`, `claim`, `expireLeases`, `settle`, `release`, `cancel`, `canUseVerb`), plus `mintToken` and `hashToken`. Uses `node:crypto`, so server code only.
-- `@supersuit/agent-requests/server`: `createAgentRequestsHandlers(host)`, `createAgentRequestsStore(host)` and `canUseVerb`. Server only.
+- `@supersuit/agent-requests`: the types and every rule, pure (`newRequest`, `claim`, `expireLeases`, `settle`, `release`, `cancel`, `canUseVerb`), and nothing that needs Node, so it is safe in a browser bundle.
+- `@supersuit/agent-requests/server`: `createAgentRequestsHandlers(host)`, `createAgentRequestsStore(host)`, `canUseVerb`, `mintToken` and `hashToken`. Server only.
 
 ## The host
 
@@ -46,9 +46,12 @@ export const host: AgentRequestsHost<'a' | 'b'> = {
   db: () => getFirestore(),            // called on use, never at import
   collection: 'cofounders_requests',   // requests live here; '<collection>_suit_seen' holds when each agent last asked
   decl: (tile) => /* { 'write-a-reflection': ['reflections.show', 'reflections.revise'] } from the tile's search.json "requests" */ {},
+  ownsSubject: async (member, tile, id) => /* true when this member owns that item; false answers 404 */ true,  // optional, but set it: without it a member can queue a request about any item id
   onDone: async (r) => { /* the app posts its news item here; called once per done request, never on failed */ },
 }
 ```
+
+`onDone` runs after the request is settled. If it throws, the error is logged with the request id and the settle still answers 200.
 
 The host must compare agent keys in constant time, map each key to exactly one member, and return `null` for a missing or unknown key. The package cannot check this for you.
 
@@ -65,7 +68,7 @@ export const { GET, POST } = createAgentRequestsHandlers(host).member
 ```
 
 - Phone `GET`: `{ requests, suitSeenAt }` (the member's requests, newest first, without any token hash; `suitSeenAt` is when their agent last asked, in ms, or null).
-- Phone `POST`: `{ tile, id, skill, note? }` asks (201). `{ cancel: id }` cancels a queued request.
+- Phone `POST`: `{ kind: 'ask', tile, id, skill, note? }` asks (201; no `kind` also means ask). `{ kind: 'cancel', id }` cancels a queued request. Asking again for the same skill and item while a request is queued or claimed returns that request instead of making a second one. `tile` and `skill` are at most 64 characters, `id` at most 128.
 - Agent `GET`: claims everything queued and answers `{ requests: [{ id, skill, subject, note, token }] }`.
 - Agent `POST /[id]`: `{ state: 'done' | 'failed' | 'released', result?, link? }`.
 

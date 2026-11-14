@@ -4,3 +4,4 @@ export { createAgentRequestsHandlers, type AgentRequestsHandlers } from './handl
 export { handle } from './http.js'
 export type { AgentRequestsHost } from './host.js'
 export { canUseVerb } from '../rules.js'
+export { mintToken, hashToken } from './token.js'

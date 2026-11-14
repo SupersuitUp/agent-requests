@@ -14,6 +14,8 @@ export interface AgentRequestsHost<M extends string> {
   collection: string
   /** What a tile may request: skill name to verbs. The app reads it from the tile's search.json "requests". */
   decl(tile: string): RequestDecl
+  /** Whether this member owns the item a request is about. When present and false, `ask` answers 404, so nobody can queue work about another person's item. */
+  ownsSubject?(member: M, tile: string, id: string): Promise<boolean>
   /** Called once when a request is settled `done`, never on `failed`: the app posts its news item here. */
   onDone?(r: AgentRequest<M>): Promise<void>
   now?(): number

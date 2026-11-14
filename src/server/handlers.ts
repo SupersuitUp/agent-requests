@@ -22,7 +22,11 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
     if (!m) throw new RequestRefusal('unauthorized', 401)
     return m
   }
-  const done = async (r: AgentRequest<M>) => { if (r.state === 'done') await host.onDone?.(r) }
+  // The request is settled before the news item is posted, so a failing onDone never undoes it or answers 500.
+  const done = async (r: AgentRequest<M>) => {
+    if (r.state !== 'done') return
+    try { await host.onDone?.(r) } catch (err) { console.error(`onDone failed for request ${r.id}`, err) }
+  }
   const strip = (r: AgentRequest<M>): AgentRequest<M> => { const { tokenHash: _t, ...rest } = r; return rest as AgentRequest<M> }
 
   async function settleAs(scope: TokenScope<M>, body: { state: 'done' | 'failed'; result: string; link?: string }): Promise<AgentRequest<M>> {
@@ -39,13 +43,17 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
   }
 
   return {
-    // The member's own phone: read their requests and ask for one; POST { cancel: id } cancels a queued one.
+    // The member's own phone: read their requests and ask for one; POST { kind: 'cancel', id } cancels; { kind: 'ask', tile, id, skill, note? } asks a queued one.
     member: {
       GET: (req?: Request) => handle(async () => Response.json(await store.mine(await signedIn(req)))),
       POST: (req: Request) => handle(async () => {
         const m = await signedIn(req)
-        const body = (await req.json()) as { tile?: unknown; id?: unknown; skill?: unknown; note?: unknown; cancel?: unknown } | null
-        if (typeof body?.cancel === 'string') return Response.json(strip(await store.cancel(m, body.cancel)))
+        const body = (await req.json()) as { kind?: unknown; tile?: unknown; id?: unknown; skill?: unknown; note?: unknown } | null
+        if (body?.kind === 'cancel') {
+          if (typeof body.id !== 'string') throw new RequestRefusal('say which request to cancel', 400)
+          return Response.json(strip(await store.cancel(m, body.id)))
+        }
+        if (body?.kind !== undefined && body.kind !== 'ask') throw new RequestRefusal('kind must be ask or cancel', 400)
         if (typeof body?.tile !== 'string' || typeof body.id !== 'string' || typeof body.skill !== 'string') throw new RequestRefusal('say which tile, item and skill', 400)
         const note = typeof body.note === 'string' ? body.note : undefined
         return Response.json(strip(await store.ask(m, { tile: body.tile, id: body.id, skill: body.skill, note })), { status: 201 })
