@@ -16,6 +16,11 @@ export interface AgentRequestsHost<M extends string> {
   decl(tile: string): RequestDecl
   /** Whether this member owns the item a request is about. When present and false, `ask` answers 404, so nobody can queue work about another person's item. */
   ownsSubject?(member: M, tile: string, id: string): Promise<boolean>
+  /**
+   * Whether this authenticated person may ask this member's suit for this skill. Required for `askFor`:
+   * without it `askFor` refuses every call. The app authenticates the person before calling `askFor`.
+   */
+  mayAsk?(member: M, by: { kind: 'person'; id: string }, skill: string): Promise<boolean>
   /** Called once when a request is settled `done`, never on `failed`: the app posts its news item here. */
   onDone?(r: AgentRequest<M>): Promise<void>
   now?(): number

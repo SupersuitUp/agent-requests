@@ -1,5 +1,7 @@
 export type RequestState = 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled'
 
+export interface RequestedBy { kind: 'member' | 'person'; id: string; name?: string }
+
 // One request from a tile to its member's agent. `tokenHash` is the SHA-256 of the request token,
 // never the token itself: the plain token is handed to the agent once, in the answer to its poll.
 export interface AgentRequest<M extends string = string> {
@@ -8,6 +10,8 @@ export interface AgentRequest<M extends string = string> {
   skill: string
   subject: { tile: string; id: string }
   note?: string
+  /** Who asked: the member from their own app, or another person whose request the member's suit runs. */
+  requestedBy?: RequestedBy
   state: RequestState
   leaseUntil?: number
   attempts: number

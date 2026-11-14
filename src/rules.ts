@@ -1,5 +1,5 @@
 import { RequestRefusal } from './errors.js'
-import { LEASE_MS, MAX_ATTEMPTS, NOTE_MAX, type AgentRequest, type RequestDecl, type TokenScope } from './types.js'
+import { LEASE_MS, MAX_ATTEMPTS, NOTE_MAX, type AgentRequest, type RequestDecl, type RequestedBy, type TokenScope } from './types.js'
 
 // Every decision about a request, as pure functions: each returns a NEW object and throws a
 // RequestRefusal on an illegal move. The store reads, calls one of these, and writes.
@@ -11,7 +11,7 @@ function cleared<M extends string>(r: AgentRequest<M>): AgentRequest<M> {
 }
 
 export function newRequest<M extends string>(a: {
-  id: string; member: M; skill: string; subject: { tile: string; id: string }; note?: string; decl: RequestDecl; now: number
+  id: string; member: M; skill: string; subject: { tile: string; id: string }; note?: string; requestedBy?: RequestedBy; decl: RequestDecl; now: number
 }): AgentRequest<M> {
   const verbs = Object.prototype.hasOwnProperty.call(a.decl, a.skill) ? a.decl[a.skill] : undefined
   if (!verbs) throw new RequestRefusal(`${a.skill} is not a skill this tile can ask for`, 400)
@@ -25,6 +25,13 @@ export function newRequest<M extends string>(a: {
     state: 'queued', attempts: 0, verbs: [...verbs], createdAt: a.now,
   }
   if (note) r.note = note
+  if (a.requestedBy) {
+    const { kind, id, name } = a.requestedBy
+    if (kind !== 'member' && kind !== 'person') throw new RequestRefusal('requestedBy.kind must be member or person', 400)
+    if (typeof id !== 'string' || !id || id.length > 128) throw new RequestRefusal('say who asked, in at most 128 characters', 400)
+    if (name !== undefined && (typeof name !== 'string' || name.length > 128)) throw new RequestRefusal('a name is at most 128 characters', 400)
+    r.requestedBy = { kind, id, ...(name ? { name } : {}) }
+  }
   return r
 }
 

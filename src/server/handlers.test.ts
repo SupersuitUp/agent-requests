@@ -139,4 +139,53 @@ describe('the agent requests API', () => {
     expect(await (await h.member.POST(req('POST', { kind: 'cancel', id }))).json()).toMatchObject({ state: 'cancelled' })
     expect((await h.member.POST(req('POST', { kind: 'cancel', id }))).status).toBe(409)
   })
+
+  describe('who asked', () => {
+    const person = { kind: 'person' as const, id: 'pastor-jo', name: 'Jo' }
+    const args = { tile: 'reflections', id: 'x1', skill: 'write-a-reflection' }
+    function withHook(mayAsk?: (m: M, by: { kind: 'person'; id: string }, skill: string) => Promise<boolean>) {
+      const s = setup()
+      const host = { ...s.host, mayAsk }
+      return { ...s, h: createAgentRequestsHandlers(host) }
+    }
+
+    it('a member ask records the member as who asked, in both GETs', async () => {
+      const { h } = setup()
+      expect(await (await ask(h)).json()).toMatchObject({ requestedBy: { kind: 'member', id: 'ana' } })
+      expect((await (await h.member.GET(req('GET'))).json()).requests[0]).toMatchObject({ requestedBy: { kind: 'member', id: 'ana' } })
+      expect((await (await h.agent.GET(req('GET'))).json()).requests[0]).toMatchObject({ requestedBy: { kind: 'member', id: 'ana' } })
+    })
+
+    it('askFor refuses 403 when the host has no mayAsk', async () => {
+      const { h, db } = withHook(undefined)
+      await expect(h.askFor('ana', person, args)).rejects.toMatchObject({ status: 403, message: 'this app takes no requests from other people' })
+      expect(db.docs.size).toBe(0)
+    })
+
+    it('askFor refuses 403 when mayAsk says no', async () => {
+      const { h, db } = withHook(async () => false)
+      await expect(h.askFor('ana', person, args)).rejects.toMatchObject({ status: 403, message: 'pastor-jo may not ask for write-a-reflection' })
+      expect(db.docs.size).toBe(0)
+    })
+
+    it('askFor files a person request, still needs a declared skill, and the agent sees who asked', async () => {
+      const { h } = withHook(async () => true)
+      await expect(h.askFor('ana', person, { ...args, skill: 'rm-rf' })).rejects.toMatchObject({ status: 400 })
+      const r = await h.askFor('ana', person, args)
+      expect(r).toMatchObject({ member: 'ana', requestedBy: { kind: 'person', id: 'pastor-jo', name: 'Jo' }, state: 'queued' })
+      expect((await (await h.agent.GET(req('GET'))).json()).requests[0]).toMatchObject({ requestedBy: { kind: 'person', id: 'pastor-jo' } })
+    })
+
+    it('askFor double-tap by the same person returns one row; another person gets their own', async () => {
+      const { h, db } = withHook(async () => true)
+      const a = await h.askFor('ana', person, args)
+      const b = await h.askFor('ana', person, args)
+      expect(b.id).toBe(a.id)
+      const c = await h.askFor('ana', { kind: 'person', id: 'other' }, args)
+      expect(c.id).not.toBe(a.id)
+      const m = await ask(h)
+      expect((await m.json()).id).not.toBe(a.id)
+      expect(db.docs.size).toBe(3)
+    })
+  })
 })

@@ -6,7 +6,7 @@ The package knows how requests, leases and tokens work. The app says who is sign
 
 ## The request
 
-One record for each ask: `id`, `member`, `skill`, `subject` (`{ tile, id }`, what it is about), an optional `note` (280 characters at most), `state`, `attempts`, `verbs`, `createdAt`, and when it ends, `result` (`{ line, link? }`) and `settledAt`.
+One record for each ask: `id`, `member`, `requestedBy` (`{ kind: 'member' | 'person', id, name? }`, who asked), `skill`, `subject` (`{ tile, id }`, what it is about), an optional `note` (280 characters at most), `state`, `attempts`, `verbs`, `createdAt`, and when it ends, `result` (`{ line, link? }`) and `settledAt`.
 
 States: `queued`, `claimed`, `done`, `failed`, `cancelled`.
 
@@ -73,3 +73,23 @@ export const { GET, POST } = createAgentRequestsHandlers(host).member
 - Agent `POST /[id]`: `{ state: 'done' | 'failed' | 'released', result?, link? }`.
 
 For the verb layer, `scopeFor(req)` turns a `Bearer` request token into a `TokenScope` (or null), and `settleAs(scope, { state, result, link? })` settles the scope's own request.
+
+## Requests from other people
+
+A request from the member's own app and a request from another person (for example a church administrator asking the member's suit to update a website) are one concept. `requestedBy` says who asked. `member` says whose suit runs it. `ask` from the signed-in member sets `{ kind: 'member', id }`.
+
+A site's intake route files a request for another person with `askFor(member, by, { tile, id, skill, note? })` on the handlers object. It uses the same checks as `ask`: the skill must be one the tile declares, the length limits apply, and a repeat ask is not duplicated. Here a repeat means the same skill, item and `requestedBy.id`, so a different person gets their own request.
+
+**The app must authenticate the person before it calls `askFor`.** `by.id` is whatever identity the app proved. The package does not check it.
+
+An authenticated app is the default door. Both the senders and the request types are allowlists, and you set them with one host hook:
+
+```ts
+mayAsk: async (member, by, skill) => /* true only for a person you allow to ask this member for this skill */ false,
+```
+
+- No `mayAsk` on the host: `askFor` refuses every call with 403 "this app takes no requests from other people".
+- `mayAsk` returns false: 403 "<id> may not ask for <skill>".
+- A skill the tile does not declare: 400, as for `ask`.
+
+The agent's poll and the member's list both carry `requestedBy`. The member's suit should treat a request from a person as needing the member's approval before anything public changes.

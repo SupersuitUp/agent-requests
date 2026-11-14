@@ -76,6 +76,13 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
     },
     scopeFor,
     ask: async (member: M, a: { tile: string; id: string; skill: string; note?: string }) => strip(await store.ask(member, a)),
+    // A request filed on a member's queue for another person. The app must have authenticated `by` first.
+    askFor: async (member: M, by: { kind: 'person'; id: string; name?: string }, a: { tile: string; id: string; skill: string; note?: string }) => {
+      if (!host.mayAsk) throw new RequestRefusal('this app takes no requests from other people', 403)
+      if (by?.kind !== 'person' || typeof by.id !== 'string' || !by.id) throw new RequestRefusal('say who asked', 400)
+      if (!(await host.mayAsk(member, { kind: 'person', id: by.id }, a.skill))) throw new RequestRefusal(`${by.id} may not ask for ${a.skill}`, 403)
+      return strip(await store.ask(member, a, { kind: 'person', id: by.id, ...(by.name ? { name: by.name } : {}) }))
+    },
     cancel: async (member: M, id: string) => strip(await store.cancel(member, id)),
     mine: (member: M) => store.mine(member),
     settleAs,
