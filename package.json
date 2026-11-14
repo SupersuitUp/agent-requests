@@ -1,0 +1,65 @@
+{
+  "name": "@supersuit/agent-requests",
+  "version": "0.1.0",
+  "description": "A queue of requests from a continent app to its member's agent: a lease, a scoped request token, and Next.js route handlers on Firestore, for any app that says who is signed in and where requests are kept.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/check-dist.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SupersuitUp/agent-requests.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "supersuit",
+    "agent-requests",
+    "nextjs",
+    "firestore"
+  ],
+  "dependencies": {
+    "server-only": "^0.0.1"
+  },
+  "peerDependencies": {
+    "firebase-admin": "^13.7.0"
+  },
+  "peerDependenciesMeta": {
+    "firebase-admin": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@supersuit/firestore-double": "^0.2.0",
+    "@types/node": "^20.19.43",
+    "firebase-admin": "^13.10.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}
