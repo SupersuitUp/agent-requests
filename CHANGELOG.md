@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 (2026-11-14)
+
+- A person whose id matches the member's id no longer merges into the member's own open request. A repeat ask now needs the same skill, item, kind of asker and id.
+- The name and id of a person who asks are cleaned of control characters and line breaks. An id with anything outside letters, digits and `_ . @ + -`, or longer than 128 characters, is refused with 400.
+- `mayAsk` now also receives the item asked about as `{ tile, id }`, so a host can allow a person on one item and refuse another. Hosts that ignore it keep working.
+- `askFor` answers 400 for a tile, item, skill or note that is not text, before it calls `mayAsk`.
+- README: the intake route should call `askFor` (never the store), wrap it in `handle` so refusals are not 500s, and treat `name` and `id` as data.
+
 ## 0.1.1 (2026-11-14)
 
 - A request now records who asked (`requestedBy`), separately from whose suit runs it. Requests from the member's own app are marked as the member. Both the member's list and the agent's poll carry it.

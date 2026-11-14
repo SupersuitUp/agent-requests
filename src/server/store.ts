@@ -38,7 +38,7 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
     if (host.ownsSubject && !(await host.ownsSubject(member, a.tile, a.id))) throw new RequestRefusal('not found', 404)
     return host.db().runTransaction(async (tx) => {
       const snap = await tx.get(rows().where('member', '==', member))
-      const open = snap.docs.map(from).find((x) => (x.state === 'queued' || x.state === 'claimed') && x.skill === a.skill && x.subject.id === a.id && (x.requestedBy?.id ?? member) === requestedBy.id)
+      const open = snap.docs.map(from).find((x) => (x.state === 'queued' || x.state === 'claimed') && x.skill === a.skill && x.subject.id === a.id && (x.requestedBy?.kind ?? 'member') === requestedBy.kind && (x.requestedBy?.id ?? member) === requestedBy.id)
       if (open) return open
       tx.set(ref, forStore(r))
       return r

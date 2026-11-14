@@ -10,6 +10,9 @@ function cleared<M extends string>(r: AgentRequest<M>): AgentRequest<M> {
   return { ...r, tokenHash: undefined, leaseUntil: undefined }
 }
 
+// Control characters, line breaks and odd spaces become one space; the result is trimmed. A name or id is data, never instructions.
+const tidy = (v: unknown): string => (typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim() : '')
+
 export function newRequest<M extends string>(a: {
   id: string; member: M; skill: string; subject: { tile: string; id: string }; note?: string; requestedBy?: RequestedBy; decl: RequestDecl; now: number
 }): AgentRequest<M> {
@@ -26,10 +29,13 @@ export function newRequest<M extends string>(a: {
   }
   if (note) r.note = note
   if (a.requestedBy) {
-    const { kind, id, name } = a.requestedBy
+    const { kind } = a.requestedBy
+    const id = tidy(a.requestedBy.id)
+    const name = a.requestedBy.name === undefined ? undefined : tidy(a.requestedBy.name)
     if (kind !== 'member' && kind !== 'person') throw new RequestRefusal('requestedBy.kind must be member or person', 400)
-    if (typeof id !== 'string' || !id || id.length > 128) throw new RequestRefusal('say who asked, in at most 128 characters', 400)
-    if (name !== undefined && (typeof name !== 'string' || name.length > 128)) throw new RequestRefusal('a name is at most 128 characters', 400)
+    if (kind === 'person' && !/^[A-Za-z0-9_.@+-]{1,128}$/.test(id)) throw new RequestRefusal('say who asked: letters, digits and _ . @ + - only, at most 128', 400)
+    if (!id || id.length > 128) throw new RequestRefusal('say who asked, in at most 128 characters', 400)
+    if (name !== undefined && name.length > 128) throw new RequestRefusal('a name is at most 128 characters', 400)
     r.requestedBy = { kind, id, ...(name ? { name } : {}) }
   }
   return r

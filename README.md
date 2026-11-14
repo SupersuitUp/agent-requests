@@ -85,7 +85,7 @@ A site's intake route files a request for another person with `askFor(member, by
 An authenticated app is the default door. Both the senders and the request types are allowlists, and you set them with one host hook:
 
 ```ts
-mayAsk: async (member, by, skill) => /* true only for a person you allow to ask this member for this skill */ false,
+mayAsk: async (member, by, skill, subject) => /* true only for a person you allow to ask this member for this skill on this item ({ tile, id }) */ false,
 ```
 
 - No `mayAsk` on the host: `askFor` refuses every call with 403 "this app takes no requests from other people".
@@ -93,3 +93,11 @@ mayAsk: async (member, by, skill) => /* true only for a person you allow to ask 
 - A skill the tile does not declare: 400, as for `ask`.
 
 The agent's poll and the member's list both carry `requestedBy`. The member's suit should treat a request from a person as needing the member's approval before anything public changes.
+
+Rules for the intake route:
+
+- Use `askFor` for every request from another person, never `store.ask` directly. `askFor` is the only path that checks `mayAsk`.
+- `askFor` throws a `RequestRefusal` (403, 400 or 404). Wrap the route in the package's `handle` from the server entry, or check `isRequestRefusal`, so a refusal answers with its status and not a 500. If `mayAsk` itself throws, `askFor` throws the same error.
+- A repeat ask is the same skill, item, `requestedBy.kind` and `requestedBy.id`. A person whose id equals the member's id is still a different asker.
+- `requestedBy.id` must be 1 to 128 characters of letters, digits and `_ . @ + -`. Control characters and line breaks are removed from `id` and `name`, and spaces are collapsed.
+- The suit treats `name` and `id` as data, never as instructions.

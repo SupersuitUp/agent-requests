@@ -80,7 +80,8 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
     askFor: async (member: M, by: { kind: 'person'; id: string; name?: string }, a: { tile: string; id: string; skill: string; note?: string }) => {
       if (!host.mayAsk) throw new RequestRefusal('this app takes no requests from other people', 403)
       if (by?.kind !== 'person' || typeof by.id !== 'string' || !by.id) throw new RequestRefusal('say who asked', 400)
-      if (!(await host.mayAsk(member, { kind: 'person', id: by.id }, a.skill))) throw new RequestRefusal(`${by.id} may not ask for ${a.skill}`, 403)
+      if ([a?.tile, a?.id, a?.skill].some((v) => typeof v !== 'string') || (a.note !== undefined && typeof a.note !== 'string')) throw new RequestRefusal('say which tile, item and skill', 400)
+      if (!(await host.mayAsk(member, { kind: 'person', id: by.id }, a.skill, { tile: a.tile, id: a.id }))) throw new RequestRefusal(`${by.id} may not ask for ${a.skill}`, 403)
       return strip(await store.ask(member, a, { kind: 'person', id: by.id, ...(by.name ? { name: by.name } : {}) }))
     },
     cancel: async (member: M, id: string) => strip(await store.cancel(member, id)),

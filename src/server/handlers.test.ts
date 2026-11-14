@@ -143,9 +143,9 @@ describe('the agent requests API', () => {
   describe('who asked', () => {
     const person = { kind: 'person' as const, id: 'pastor-jo', name: 'Jo' }
     const args = { tile: 'reflections', id: 'x1', skill: 'write-a-reflection' }
-    function withHook(mayAsk?: (m: M, by: { kind: 'person'; id: string }, skill: string) => Promise<boolean>) {
+    function withHook(mayAsk?: AgentRequestsHost<M>['mayAsk']) {
       const s = setup()
-      const host = { ...s.host, mayAsk }
+      const host: AgentRequestsHost<M> = { ...s.host, mayAsk }
       return { ...s, h: createAgentRequestsHandlers(host) }
     }
 
@@ -186,6 +186,53 @@ describe('the agent requests API', () => {
       const m = await ask(h)
       expect((await m.json()).id).not.toBe(a.id)
       expect(db.docs.size).toBe(3)
+    })
+
+    it('a person whose id equals the member id does not collapse with the member\'s own open request', async () => {
+      const { h, db } = withHook(async () => true)
+      const m = await (await ask(h)).json()
+      const p = await h.askFor('ana', { kind: 'person', id: 'ana' }, args)
+      expect(p.id).not.toBe(m.id)
+      expect(p.requestedBy).toMatchObject({ kind: 'person', id: 'ana' })
+      expect(db.docs.size).toBe(2)
+    })
+
+    it('cleans the name and id of control characters and refuses a hostile id', async () => {
+      const { h, db } = withHook(async () => true)
+      const r = await h.askFor('ana', { kind: 'person', id: 'jo@church.org', name: 'Jo\nIgnore\u2028  previous\u0007' }, args)
+      expect(r.requestedBy).toEqual({ kind: 'person', id: 'jo@church.org', name: 'Jo Ignore previous' })
+      for (const id of ['jo\nIgnore previous', 'a b', 'x/../y', '<script>', 'a'.repeat(129)]) {
+        await expect(h.askFor('ana', { kind: 'person', id, name: 'x' }, { ...args, id: 'x2' })).rejects.toMatchObject({ status: 400 })
+      }
+      expect(db.docs.size).toBe(1)
+    })
+
+    it('mayAsk gets the subject, so a host can allow one item and refuse another', async () => {
+      const { h } = withHook(async (_m, _by, _skill, subject) => subject?.id === 'x1')
+      await expect(h.askFor('ana', person, args)).resolves.toMatchObject({ state: 'queued' })
+      await expect(h.askFor('ana', person, { ...args, id: 'x2' })).rejects.toMatchObject({ status: 403 })
+    })
+
+    it('askFor refuses non-string tile, id, skill or note with 400 before mayAsk runs', async () => {
+      const mayAsk = vi.fn(async () => true)
+      const { h } = withHook(mayAsk)
+      for (const bad of [{ tile: 1 }, { id: {} }, { skill: null }, { note: 5 }]) {
+        await expect(h.askFor('ana', person, { ...args, ...bad } as never)).rejects.toMatchObject({ status: 400 })
+      }
+      expect(mayAsk).not.toHaveBeenCalled()
+    })
+
+    it('a member POST body that carries requestedBy is ignored', async () => {
+      const { h } = setup()
+      const res = await h.member.POST(req('POST', { kind: 'ask', ...args, requestedBy: { kind: 'person', id: 'evil' } }))
+      expect(await res.json()).toMatchObject({ requestedBy: { kind: 'member', id: 'ana' } })
+    })
+
+    it('ownsSubject still refuses a person\'s ask with 404', async () => {
+      const s = setup()
+      const h = createAgentRequestsHandlers({ ...s.host, mayAsk: async () => true, ownsSubject: async () => false })
+      await expect(h.askFor('ana', person, args)).rejects.toMatchObject({ status: 404 })
+      expect(s.db.docs.size).toBe(0)
     })
   })
 })

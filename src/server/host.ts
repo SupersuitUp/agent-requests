@@ -18,9 +18,9 @@ export interface AgentRequestsHost<M extends string> {
   ownsSubject?(member: M, tile: string, id: string): Promise<boolean>
   /**
    * Whether this authenticated person may ask this member's suit for this skill. Required for `askFor`:
-   * without it `askFor` refuses every call. The app authenticates the person before calling `askFor`.
+   * without it `askFor` refuses every call. The app authenticates the person before calling `askFor`. `subject` is the item asked about, so a host can allow a person on one item and not another. If it throws, `askFor` throws too.
    */
-  mayAsk?(member: M, by: { kind: 'person'; id: string }, skill: string): Promise<boolean>
+  mayAsk?(member: M, by: { kind: 'person'; id: string }, skill: string, subject: { tile: string; id: string }): Promise<boolean>
   /** Called once when a request is settled `done`, never on `failed`: the app posts its news item here. */
   onDone?(r: AgentRequest<M>): Promise<void>
   now?(): number
