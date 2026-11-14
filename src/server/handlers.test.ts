@@ -1,0 +1,123 @@
+import { describe, expect, it, vi } from 'vitest'
+import { createFirestore } from '@supersuit/firestore-double'
+import type { Firestore } from 'firebase-admin/firestore'
+import { createAgentRequestsHandlers } from './handlers.js'
+import type { AgentRequestsHost } from './host.js'
+
+type M = 'ana' | 'ben'
+function setup(signedIn: M | null = 'ana', agentKey: M | null = 'ana') {
+  const db = createFirestore()
+  const onDone = vi.fn(async () => {})
+  const host: AgentRequestsHost<M> = {
+    member: async () => signedIn,
+    agentMember: async () => agentKey,
+    db: () => db as unknown as Firestore,
+    collection: 'reqs',
+    decl: () => ({ 'write-a-reflection': ['reflections.revise'] }),
+    onDone,
+  }
+  return { db, host, onDone, h: createAgentRequestsHandlers(host) }
+}
+const req = (method: string, body?: unknown, headers: Record<string, string> = {}) =>
+  new Request('https://app.example/api/requests', { method, headers: { 'content-type': 'application/json', ...headers }, body: body === undefined ? undefined : JSON.stringify(body) })
+const params = (id: string) => ({ params: Promise.resolve({ id }) })
+const ask = (h: ReturnType<typeof setup>['h']) => h.member.POST(req('POST', { tile: 'reflections', id: 'x1', skill: 'write-a-reflection', note: 'warmer' }))
+
+describe('the agent requests API', () => {
+  it('answers a stranger 403 on the member routes and 401 on the agent routes', async () => {
+    const { h, db } = setup(null, null)
+    expect((await h.member.GET(req('GET'))).status).toBe(403)
+    expect((await h.member.POST(req('POST', {}))).status).toBe(403)
+    expect((await h.agent.GET(req('GET'))).status).toBe(401)
+    expect((await h.agent.POST(req('POST', { state: 'done' }), params('r'))).status).toBe(401)
+    expect(db.docs.size).toBe(0)
+  })
+
+  it('ask refuses an undeclared skill with 400, and takes a declared one with 201', async () => {
+    const { h } = setup()
+    const bad = await h.member.POST(req('POST', { tile: 'reflections', id: 'x1', skill: 'rm-rf' }))
+    expect(bad.status).toBe(400)
+    await expect(bad.json()).resolves.toEqual({ error: expect.stringMatching(/not a skill/) })
+    const ok = await ask(h)
+    expect(ok.status).toBe(201)
+    expect(await ok.json()).toMatchObject({ state: 'queued', skill: 'write-a-reflection', note: 'warmer' })
+  })
+
+  it('the agent GET claims, hands out the token once, and records the poll', async () => {
+    const { h } = setup()
+    await ask(h)
+    const res = await h.agent.GET(req('GET'))
+    const { requests } = await res.json()
+    expect(requests).toHaveLength(1)
+    expect(requests[0]).toMatchObject({ skill: 'write-a-reflection', subject: { tile: 'reflections', id: 'x1' }, note: 'warmer' })
+    expect(requests[0].token).toMatch(/^[A-Za-z0-9_-]{43,}$/)
+    expect((await (await h.agent.GET(req('GET'))).json()).requests).toEqual([])
+    const mine = await (await h.member.GET(req('GET'))).json()
+    expect(mine.suitSeenAt).toEqual(expect.any(Number))
+    expect(mine.requests[0]).toMatchObject({ state: 'claimed' })
+    expect(mine.requests[0]).not.toHaveProperty('tokenHash')
+  })
+
+  it('scopeFor reads a Bearer token while claimed and null for anything else', async () => {
+    const { h } = setup()
+    await ask(h)
+    const [c] = (await (await h.agent.GET(req('GET'))).json()).requests
+    expect(await h.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` }))).toMatchObject({ requestId: c.id, member: 'ana', subjectId: 'x1' })
+    expect(await h.scopeFor(req('GET'))).toBeNull()
+    expect(await h.scopeFor(req('GET', undefined, { authorization: 'Bearer nope' }))).toBeNull()
+    expect(await h.scopeFor(req('GET', undefined, { authorization: c.token }))).toBeNull()
+    await h.agent.POST(req('POST', { state: 'done', result: 'Draft ready' }), params(c.id))
+    expect(await h.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` }))).toBeNull()
+  })
+
+  it('onDone is called once on done and never on failed', async () => {
+    const { h, onDone } = setup()
+    await ask(h)
+    const [c] = (await (await h.agent.GET(req('GET'))).json()).requests
+    const done = await h.agent.POST(req('POST', { state: 'done', result: 'Draft ready', link: 'https://x.example/d' }), params(c.id))
+    expect(done.status).toBe(200)
+    expect(await done.json()).toMatchObject({ state: 'done', result: { line: 'Draft ready', link: 'https://x.example/d' } })
+    expect(onDone).toHaveBeenCalledTimes(1)
+    expect((await h.agent.POST(req('POST', { state: 'done', result: 'again' }), params(c.id))).status).toBe(409)
+    expect(onDone).toHaveBeenCalledTimes(1)
+
+    await ask(h)
+    const [c2] = (await (await h.agent.GET(req('GET'))).json()).requests
+    expect(await h.settleAs({ requestId: c2.id, member: 'ana', verbs: [], subjectId: 'x1' }, { state: 'failed', result: 'no luck' })).toMatchObject({ state: 'failed' })
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it('settleAs with a done scope calls onDone, and refuses a state it does not know', async () => {
+    const { h, onDone } = setup()
+    await ask(h)
+    const [c] = (await (await h.agent.GET(req('GET'))).json()).requests
+    const scope = (await h.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` })))!
+    await expect(h.settleAs(scope, { state: 'released' as never, result: 'x' })).rejects.toMatchObject({ status: 400 })
+    expect(await h.settleAs(scope, { state: 'done', result: 'ok' })).toMatchObject({ state: 'done' })
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
+  it("another member's key cannot settle a request, and it answers as missing", async () => {
+    const a = setup('ana', 'ana')
+    await ask(a.h)
+    const [c] = (await (await a.h.agent.GET(req('GET'))).json()).requests
+    const ben = createAgentRequestsHandlers<M>({ ...a.host, agentMember: async () => 'ben' })
+    const res = await ben.agent.POST(req('POST', { state: 'done', result: 'x' }), params(c.id))
+    expect(res.status).toBe(404)
+    expect(a.onDone).not.toHaveBeenCalled()
+  })
+
+  it('answers an unknown state or an unreadable body 400', async () => {
+    const { h } = setup()
+    expect((await h.agent.POST(req('POST', { state: 'sideways' }), params('r'))).status).toBe(400)
+    const bad = new Request('https://app.example/x', { method: 'POST', body: '{nope' })
+    expect((await h.member.POST(bad)).status).toBe(400)
+  })
+
+  it('cancels from the phone, and only a queued request', async () => {
+    const { h } = setup()
+    const { id } = await (await ask(h)).json()
+    expect(await (await h.member.POST(req('POST', { cancel: id }))).json()).toMatchObject({ state: 'cancelled' })
+    expect((await h.member.POST(req('POST', { cancel: id }))).status).toBe(409)
+  })
+})
