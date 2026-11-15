@@ -31,7 +31,7 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
 
   async function settleAs(scope: TokenScope<M>, body: { state: 'done' | 'failed'; result: string; link?: string }): Promise<AgentRequest<M>> {
     if (body.state !== 'done' && body.state !== 'failed') throw new RequestRefusal('state must be done or failed', 400)
-    const r = await store.settleByAgent(scope.member, scope.requestId, body)
+    const r = await store.settleByToken(scope.member, scope.requestId, body)
     await done(r)
     return strip(r)
   }
@@ -90,8 +90,9 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
     // A person's own requests on this member's queue, for a page that shows each person only theirs.
     mine: (member: M, requestedBy?: { kind: 'member' | 'person'; id: string }) => store.mine(member, requestedBy),
     settleAs,
-    // The member's agent key closes a request that is in review (or claimed), done or failed. Never a token.
-    settleByMember: async (member: M, id: string, body: { state: 'done' | 'failed'; line: string; link?: string }) => {
+    // The member's agent key closes a request that is in review (or claimed), done or failed. Authenticates the key itself: a request without it answers 401. Never a token.
+    settleByMember: async (req: Request, id: string, body: { state: 'done' | 'failed'; line: string; link?: string }) => {
+      const member = await agent(req)
       if (body?.state !== 'done' && body?.state !== 'failed') throw new RequestRefusal('state must be done or failed', 400)
       const r = await store.settleByMember(member, id, body)
       await done(r)

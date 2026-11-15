@@ -249,7 +249,7 @@ describe('the agent requests API', () => {
     expect(await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` }))).toBeNull()
     expect(await own.mine('ana', { kind: 'person', id: 'p2' })).toMatchObject({ requests: [] })
     await expect(own.settleByMember('ana', filed.id, { state: 'bad' as never, line: 'x' })).rejects.toMatchObject({ status: 400 })
-    expect(await own.settleByMember('ana', filed.id, { state: 'done', line: 'Posted' })).toMatchObject({ state: 'done' })
+    expect(await own.settleByMember(req('POST'), filed.id, { state: 'done', line: 'Posted' })).toMatchObject({ state: 'done' })
     expect(onDone).toHaveBeenCalledTimes(1)
     void h
   })
@@ -263,5 +263,31 @@ describe('the agent requests API', () => {
     await own.toReview(scope, { line: 'ready' })
     expect((await own.agent.POST(req('POST', { state: 'done', result: 'Posted' }), params(r.id))).status).toBe(200)
     void h
+  })
+
+  it('a token scope cannot settle a review row: 409, and the row stays in review', async () => {
+    const { host, db } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true })
+    const r = await (await own.member.POST(req('POST', { tile: 'door', skill: 'write-a-reflection' }))).json()
+    const [c] = (await (await own.agent.GET(req('GET'))).json()).requests
+    const scope = (await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` })))!
+    await own.toReview(scope, { line: 'ready' })
+    await expect(own.settleAs(scope, { state: 'done', result: 'sneaky' })).rejects.toMatchObject({ status: 409 })
+    expect(db.peek('reqs', r.id)).toMatchObject({ state: 'review' })
+  })
+
+  it('settleByMember answers 401 without the member agent key', async () => {
+    const { host } = setup('ana', null)
+    const own = createAgentRequestsHandlers<M>(host)
+    await expect(own.settleByMember(req('POST'), 'r', { state: 'done', line: 'x' })).rejects.toMatchObject({ status: 401 })
+  })
+
+  it('mayAsk false under ownSubject answers 403 and writes no row', async () => {
+    const { host, db } = setup()
+    const mayAsk = vi.fn(async () => false)
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true, mayAsk })
+    await expect(own.askFor('ana', { kind: 'person', id: 'p1' }, { tile: 'door', skill: 'write-a-reflection' })).rejects.toMatchObject({ status: 403 })
+    expect(mayAsk).toHaveBeenCalledWith('ana', { kind: 'person', id: 'p1' }, 'write-a-reflection', { tile: 'door', id: '' })
+    expect(db.docs.size).toBe(0)
   })
 })

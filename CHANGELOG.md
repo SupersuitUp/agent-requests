@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 (2026-11-15)
+
+- A request token can no longer close a request that is in review. `settleAs` closes only a claimed request and answers 409 on a request in review. Only the member's agent key can close one.
+- `settleByMember` on the handlers now takes the request and checks the member's agent key itself. A call without the key answers 401. It no longer takes a member name. If you called it with a member name, pass the request instead.
+- `show` answers 409 unless the request is claimed with a live lease, so it stops working once the request is in review.
+- The skill is checked against the tile's declaration before `checkPayload` runs, so the host's hook never sees a payload for a skill the tile did not declare.
+- README: the 8 KB cap counts JSON characters, and `mayAsk` sees an empty subject id under `ownSubject`.
+
 ## 0.2.0 (2026-11-15)
 
 - A request can now wait for a look. The agent moves a claimed request to the new `review` state with one line (and a link) saying what is ready. Its token stops working and its lease is cleared. The member's own agent key then closes it as `done` or `failed` with `settleByMember`. A request token can never do this.

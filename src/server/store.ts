@@ -36,9 +36,11 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
     const requestedBy: RequestedBy = by ?? { kind: 'member', id: member }
     const ref = rows().doc()
     const own = host.ownSubject === true
+    const decl = host.decl(a.tile)
+    if (!Object.prototype.hasOwnProperty.call(decl, a.skill)) throw new RequestRefusal(`${a.skill} is not a skill this tile can ask for`, 400)
     assertPayloadSize(a.payload)
     const payload = a.payload !== undefined && host.checkPayload ? await host.checkPayload(a.skill, a.payload) : a.payload
-    const r = newRequest({ id: ref.id, member, skill: a.skill, subject: { tile: a.tile, id: a.id }, note: a.note, requestedBy, decl: host.decl(a.tile), now: now(), payload, leaseMs: host.leaseMs?.(a.tile, a.skill), ownSubject: own })
+    const r = newRequest({ id: ref.id, member, skill: a.skill, subject: { tile: a.tile, id: a.id }, note: a.note, requestedBy, decl, now: now(), payload, leaseMs: host.leaseMs?.(a.tile, a.skill), ownSubject: own })
     if (!own && host.ownsSubject && !(await host.ownsSubject(member, a.tile, r.subject.id))) throw new RequestRefusal('not found', 404)
     if (own) { await ref.set(forStore(r)); return r }
     return host.db().runTransaction(async (tx) => {
@@ -86,7 +88,8 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
   }
 
   // A request this member owns, read the way the agent's key sees it. Another member's id answers as a missing one.
-  async function settleByAgent(member: M, id: string, a: { state: 'done' | 'failed' | 'released'; result?: string; link?: string }): Promise<AgentRequest<M>> {
+  // `viaToken` is the request-token path: it stays claimed-only, so a token can never close a request in review.
+  async function settleOne(member: M, id: string, a: { state: 'done' | 'failed' | 'released'; result?: string; link?: string }, viaToken: boolean): Promise<AgentRequest<M>> {
     const ref = rows().doc(id)
     const t = now()
     return host.db().runTransaction(async (tx) => {
@@ -94,12 +97,15 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
       if (!doc.exists || from(doc).member !== member) throw new RequestRefusal('not found', 404)
       const r0 = expireLeases([from(doc)], t)[0]
       const r = a.state === 'released' ? release(r0)
-        : r0.state === 'review' ? settleByMember(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
+        : !viaToken && r0.state === 'review' ? settleByMember(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
         : settle(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
       tx.set(ref, forStore(r))
       return r
     })
   }
+
+  const settleByAgent = (member: M, id: string, a: { state: 'done' | 'failed' | 'released'; result?: string; link?: string }) => settleOne(member, id, a, false)
+  const settleByToken = (member: M, id: string, a: { state: 'done' | 'failed'; result?: string; link?: string }) => settleOne(member, id, a, true)
 
   // The member's agent key closes a request in review (or a claimed one): done or failed.
   async function settleByMemberKey(member: M, id: string, a: { state: 'done' | 'failed'; line: string; link?: string }): Promise<AgentRequest<M>> {
@@ -134,6 +140,7 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
     const doc = await rows().doc(id).get()
     if (!doc.exists) throw new RequestRefusal('not found', 404)
     const r = from(doc)
+    if (r.state !== 'claimed' || r.leaseUntil === undefined || r.leaseUntil <= now()) throw new RequestRefusal(`already ${r.state}`, 409)
     return { id: r.id, skill: r.skill, subject: r.subject, payload: r.payload, note: r.note, requestedBy: r.requestedBy }
   }
 
@@ -157,7 +164,7 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
     return { requests: list.map(forPerson).sort((a, b) => b.createdAt - a.createdAt), suitSeenAt: typeof at === 'number' ? at : null }
   }
 
-  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, settleByMember: settleByMemberKey, renew: renewOwn, toReview: toReviewOwn, show: showOwn, scopeForToken, mine }
+  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, settleByToken, settleByMember: settleByMemberKey, renew: renewOwn, toReview: toReviewOwn, show: showOwn, scopeForToken, mine }
 }
 
 export type AgentRequestsStore<M extends string> = ReturnType<typeof createAgentRequestsStore<M>>

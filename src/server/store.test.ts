@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { createFirestore } from '@supersuit/firestore-double'
 import type { Firestore } from 'firebase-admin/firestore'
 import { createAgentRequestsStore } from './store.js'
@@ -206,5 +206,45 @@ describe('the request store', () => {
     await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' }, { kind: 'person', id: 'p2' })
     expect((await store.mine('ana', { kind: 'person', id: 'p1' })).requests).toHaveLength(1)
     expect((await store.mine('ana')).requests).toHaveLength(2)
+  })
+
+  it('show is refused after review, and after the lease runs out', async () => {
+    const { store, clock } = setup(undefined, { ownSubject: true })
+    const r = await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' })
+    await expect(store.show(r.id)).rejects.toMatchObject({ status: 409 })
+    await store.agentPoll('ana')
+    await expect(store.show(r.id)).resolves.toMatchObject({ id: r.id })
+    clock.set(clock.now() + LEASE_MS + 1)
+    await expect(store.show(r.id)).rejects.toMatchObject({ status: 409 })
+    const r2 = await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' })
+    clock.set(clock.now() + 1)
+    await store.agentPoll('ana')
+    await store.toReview(r2.id, { line: 'ready' })
+    await expect(store.show(r2.id)).rejects.toMatchObject({ status: 409 })
+  })
+
+  it('renew on an expired lease is refused 409', async () => {
+    const { store, clock } = setup()
+    const r = await ask(store, 'ana')
+    await store.agentPoll('ana')
+    clock.set(clock.now() + LEASE_MS + 1)
+    await expect(store.renew(r.id)).rejects.toMatchObject({ status: 409 })
+  })
+
+  it('never calls checkPayload for an undeclared skill', async () => {
+    const checkPayload = vi.fn((_s: string, p: unknown) => p)
+    const { db, store } = setup(undefined, { checkPayload })
+    await expect(store.ask('ana', { tile: 'reflections', id: 'x', skill: 'rm-rf', payload: { a: 1 } })).rejects.toMatchObject({ status: 400 })
+    expect(checkPayload).not.toHaveBeenCalled()
+    expect(db.docs.size).toBe(0)
+  })
+
+  it('a token settle (settleByToken) refuses a review row and leaves it in review', async () => {
+    const { db, store } = setup()
+    const r = await ask(store, 'ana')
+    await store.agentPoll('ana')
+    await store.toReview(r.id, { line: 'ready' })
+    await expect(store.settleByToken('ana', r.id, { state: 'done', result: 'sneaky' })).rejects.toMatchObject({ status: 409 })
+    expect(db.peek('reqs', r.id)).toMatchObject({ state: 'review' })
   })
 })

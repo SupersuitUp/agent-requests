@@ -15,7 +15,7 @@ States: `queued`, `claimed`, `review`, `done`, `failed`, `cancelled`.
 - An agent can give a request back (`released`). That does not count as an attempt.
 - A request may carry its own lease length (`leaseMs`, set at ask time from the host's `leaseMs(tile, skill)`). The claim answer includes `leaseMs`. A long job calls `renew` while it works, so it is never claimed twice.
 - When the agent has done its part and the member must look, it moves the request to `review` (`toReview`, from `claimed` only). The token stops working and the lease is cleared. The member's own agent key then closes it with `settleByMember` (`done` or `failed`), from `review` or `claimed`. A token can never do this.
-- A request may carry a `payload`: any JSON, at most 8 KB written as JSON (400 over). The host's `checkPayload(skill, payload)` cleans it for each skill, or throws a `RequestRefusal`. The token's `show` returns the payload and note of its own request only.
+- A request may carry a `payload`: any JSON, at most 8192 characters of `JSON.stringify` output (400 over). The host's `checkPayload(skill, payload)` cleans it for each skill, or throws a `RequestRefusal`. The token's `show` returns the payload and note of its own request only, and only while it is claimed with a live lease. The skill is checked against the tile's declaration before `checkPayload` runs.
 - With the host option `ownSubject: true`, every ask is its own subject (the subject id is the new request id, callers pass only `tile`) and a second ask is never merged into an open one. Default false keeps the one-open-request-per-item rule.
 - `mine(member, requestedBy?)` lists a member's requests, or only those one asker made (`{ kind, id }`). `byRequester` is the same filter as a pure function.
 - A person can cancel a request only while it is queued.
@@ -77,7 +77,7 @@ export const { GET, POST } = createAgentRequestsHandlers(host).member
 - Agent `GET`: claims everything queued and answers `{ requests: [{ id, skill, subject, note, token }] }`.
 - Agent `POST /[id]`: `{ state: 'done' | 'failed' | 'released', result?, link? }`. With the member's agent key, `done` and `failed` also close a request in `review`.
 
-For the verb layer, `scopeFor(req)` turns a `Bearer` request token into a `TokenScope` (or null), and `settleAs(scope, { state, result, link? })` settles the scope's own request. Also on the handlers, token-authorized and on the scope's own request only: `renew(scope)`, `toReview(scope, { line, link? })` and `show(scope)`. Key-authorized: `settleByMember(member, id, { state, line, link? })`. `mine(member, requestedBy?)` serves a page that shows each person only their own requests.
+For the verb layer, `scopeFor(req)` turns a `Bearer` request token into a `TokenScope` (or null), and `settleAs(scope, { state, result, link? })` settles the scope's own request. Also on the handlers, token-authorized and on the scope's own request only: `renew(scope)`, `toReview(scope, { line, link? })` and `show(scope)`. Key-authorized: `settleByMember(req, id, { state, line, link? })` reads the member's agent key from the request itself and answers 401 without it. The request-token path (`settleAs`) closes only a claimed request, never one in review. Under `ownSubject`, `mayAsk` receives `subject.id = ''` because the request does not exist yet. `mine(member, requestedBy?)` serves a page that shows each person only their own requests.
 
 ## Requests from other people
 
