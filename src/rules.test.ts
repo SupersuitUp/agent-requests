@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { newRequest, claim, settle, release, cancel, expireLeases, canUseVerb } from './rules'
+import { newRequest, claim, settle, release, cancel, expireLeases, canUseVerb, renew, toReview, settleByMember, byRequester } from './rules'
 
 const decl = { 'write-a-reflection': ['reflections.show', 'reflections.revise'] }
 const base = () => newRequest({ id: 'r1', member: 'gary', skill: 'write-a-reflection', subject: { tile: 'reflections', id: 'x1' }, decl, now: 0 })
@@ -39,5 +39,45 @@ describe('rules', () => {
     expect(canUseVerb(scope, { name: 'reflections.revise', reachesAPerson: false }, { id: 'other' })).toBe(false)
     expect(canUseVerb(scope, { name: 'reflections.send', reachesAPerson: true }, { id: 'x1' })).toBe(false)
     expect(canUseVerb(scope, { name: 'requests.settle', reachesAPerson: false }, { id: 'r1' })).toBe(true)
+  })
+
+  it('renew extends a claimed lease by the request\'s own leaseMs, and only a claimed one', () => {
+    const r = newRequest({ id: 'r', member: 'gary', skill: 'write-a-reflection', subject: { tile: 't', id: 'x' }, decl, now: 0, leaseMs: 3 * 3600_000 })
+    const c = claim(r, { now: 10, tokenHash: 'h' })
+    expect(c.leaseUntil).toBe(10 + 3 * 3600_000)
+    expect(renew(c, 50_000).leaseUntil).toBe(50_000 + 3 * 3600_000)
+    expect(() => renew(base(), 1)).toThrow(/already queued/)
+    expect(() => renew(settle(c, { state: 'done', line: 'x', now: 1 }), 2)).toThrow(/already done/)
+  })
+  it('review kills the token, clears the lease, keeps its line, and is refused from queued', () => {
+    const r = toReview(claim(base(), { now: 0, tokenHash: 'h' }), { line: 'Clip ready', link: 'https://x.example/c' })
+    expect(r).toMatchObject({ state: 'review', review: { line: 'Clip ready', link: 'https://x.example/c' }, tokenHash: undefined, leaseUntil: undefined })
+    expect(() => toReview(base(), { line: 'x' })).toThrow(/already queued/)
+    expect(() => toReview(claim(base(), { now: 0, tokenHash: 'h' }), { line: ' ' })).toThrow(/one line/)
+    expect(expireLeases([r], 1e12)[0]).toBe(r)
+  })
+  it('settleByMember closes a review or claimed request, and refuses queued or done', () => {
+    const c = claim(base(), { now: 0, tokenHash: 'h' })
+    const rv = toReview(c, { line: 'ready' })
+    expect(settleByMember(rv, { state: 'done', line: 'Posted', now: 9 })).toMatchObject({ state: 'done', result: { line: 'Posted' }, settledAt: 9 })
+    expect(settleByMember(rv, { state: 'failed', line: 'Not posted', now: 9 }).state).toBe('failed')
+    expect(settleByMember(c, { state: 'done', line: 'ok', now: 9 }).state).toBe('done')
+    expect(() => settleByMember(base(), { state: 'done', line: 'x', now: 1 })).toThrow(/already queued/)
+    expect(() => settleByMember(settleByMember(rv, { state: 'done', line: 'x', now: 1 }), { state: 'done', line: 'y', now: 2 })).toThrow(/already done/)
+  })
+  it('a payload over 8 KB is refused with 400, and a small one is kept', () => {
+    const mk = (payload: unknown) => newRequest({ id: 'r', member: 'gary', skill: 'write-a-reflection', subject: { tile: 't', id: 'x' }, decl, now: 0, payload })
+    expect(() => mk({ s: 'a'.repeat(8 * 1024) })).toThrow(/8192/)
+    expect(mk({ s: 'a'.repeat(100) }).payload).toEqual({ s: 'a'.repeat(100) })
+  })
+  it('its own subject makes the subject id the request id', () => {
+    const r = newRequest({ id: 'r9', member: 'gary', skill: 'write-a-reflection', subject: { tile: 'door' }, decl, now: 0, ownSubject: true })
+    expect(r.subject).toEqual({ tile: 'door', id: 'r9' })
+  })
+  it('byRequester keeps only that asker', () => {
+    const a = newRequest({ id: 'a', member: 'gary', skill: 'write-a-reflection', subject: { tile: 't', id: 'x' }, decl, now: 0, requestedBy: { kind: 'person', id: 'p1' } })
+    const b = newRequest({ id: 'b', member: 'gary', skill: 'write-a-reflection', subject: { tile: 't', id: 'x' }, decl, now: 0, requestedBy: { kind: 'person', id: 'p2' } })
+    expect(byRequester([a, b], { kind: 'person', id: 'p1' })).toEqual([a])
+    expect(byRequester([a, b])).toEqual([a, b])
   })
 })

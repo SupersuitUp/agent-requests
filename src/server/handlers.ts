@@ -1,6 +1,6 @@
 import 'server-only'
 import { RequestRefusal, isRequestRefusal } from '../errors.js'
-import type { AgentRequest, TokenScope } from '../types.js'
+import { LEASE_MS, type AgentRequest, type TokenScope } from '../types.js'
 import type { AgentRequestsHost } from './host.js'
 import { handle as handleWith } from './http.js'
 import { createAgentRequestsStore, type AgentRequestsStore } from './store.js'
@@ -48,15 +48,16 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
       GET: (req?: Request) => handle(async () => Response.json(await store.mine(await signedIn(req)))),
       POST: (req: Request) => handle(async () => {
         const m = await signedIn(req)
-        const body = (await req.json()) as { kind?: unknown; tile?: unknown; id?: unknown; skill?: unknown; note?: unknown } | null
+        const body = (await req.json()) as { kind?: unknown; tile?: unknown; id?: unknown; skill?: unknown; note?: unknown; payload?: unknown } | null
         if (body?.kind === 'cancel') {
           if (typeof body.id !== 'string') throw new RequestRefusal('say which request to cancel', 400)
           return Response.json(strip(await store.cancel(m, body.id)))
         }
         if (body?.kind !== undefined && body.kind !== 'ask') throw new RequestRefusal('kind must be ask or cancel', 400)
-        if (typeof body?.tile !== 'string' || typeof body.id !== 'string' || typeof body.skill !== 'string') throw new RequestRefusal('say which tile, item and skill', 400)
+        const idOk = typeof body?.id === 'string' || (host.ownSubject === true && body?.id === undefined)
+        if (typeof body?.tile !== 'string' || !idOk || typeof body.skill !== 'string') throw new RequestRefusal('say which tile, item and skill', 400)
         const note = typeof body.note === 'string' ? body.note : undefined
-        return Response.json(strip(await store.ask(m, { tile: body.tile, id: body.id, skill: body.skill, note })), { status: 201 })
+        return Response.json(strip(await store.ask(m, { tile: body.tile, id: body.id as string | undefined, skill: body.skill, note, payload: body.payload })), { status: 201 })
       }),
     },
     // The member's agent, from their desk. The key alone decides whose requests: GET claims them.
@@ -75,18 +76,31 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
       }),
     },
     scopeFor,
-    ask: async (member: M, a: { tile: string; id: string; skill: string; note?: string }) => strip(await store.ask(member, a)),
+    ask: async (member: M, a: { tile: string; id?: string; skill: string; note?: string; payload?: unknown }) => strip(await store.ask(member, a)),
     // A request filed on a member's queue for another person. The app must have authenticated `by` first.
-    askFor: async (member: M, by: { kind: 'person'; id: string; name?: string }, a: { tile: string; id: string; skill: string; note?: string }) => {
+    askFor: async (member: M, by: { kind: 'person'; id: string; name?: string }, a: { tile: string; id?: string; skill: string; note?: string; payload?: unknown }) => {
       if (!host.mayAsk) throw new RequestRefusal('this app takes no requests from other people', 403)
       if (by?.kind !== 'person' || typeof by.id !== 'string' || !by.id) throw new RequestRefusal('say who asked', 400)
-      if ([a?.tile, a?.id, a?.skill].some((v) => typeof v !== 'string') || (a.note !== undefined && typeof a.note !== 'string')) throw new RequestRefusal('say which tile, item and skill', 400)
-      if (!(await host.mayAsk(member, { kind: 'person', id: by.id }, a.skill, { tile: a.tile, id: a.id }))) throw new RequestRefusal(`${by.id} may not ask for ${a.skill}`, 403)
+      const ownId = host.ownSubject === true && a?.id === undefined
+      if ([a?.tile, a?.skill].some((v) => typeof v !== 'string') || (!ownId && typeof a?.id !== 'string') || (a.note !== undefined && typeof a.note !== 'string')) throw new RequestRefusal('say which tile, item and skill', 400)
+      if (!(await host.mayAsk(member, { kind: 'person', id: by.id }, a.skill, { tile: a.tile, id: a.id ?? '' }))) throw new RequestRefusal(`${by.id} may not ask for ${a.skill}`, 403)
       return strip(await store.ask(member, a, { kind: 'person', id: by.id, ...(by.name ? { name: by.name } : {}) }))
     },
     cancel: async (member: M, id: string) => strip(await store.cancel(member, id)),
-    mine: (member: M) => store.mine(member),
+    // A person's own requests on this member's queue, for a page that shows each person only theirs.
+    mine: (member: M, requestedBy?: { kind: 'member' | 'person'; id: string }) => store.mine(member, requestedBy),
     settleAs,
+    // The member's agent key closes a request that is in review (or claimed), done or failed. Never a token.
+    settleByMember: async (member: M, id: string, body: { state: 'done' | 'failed'; line: string; link?: string }) => {
+      if (body?.state !== 'done' && body?.state !== 'failed') throw new RequestRefusal('state must be done or failed', 400)
+      const r = await store.settleByMember(member, id, body)
+      await done(r)
+      return strip(r)
+    },
+    // Token-authorized: each works on the token's own request only.
+    renew: async (scope: TokenScope<M>) => { const r = await store.renew(scope.requestId); return { leaseUntil: r.leaseUntil as number, leaseMs: r.leaseMs ?? LEASE_MS } },
+    toReview: async (scope: TokenScope<M>, body: { line: string; link?: string }) => strip(await store.toReview(scope.requestId, body)),
+    show: (scope: TokenScope<M>) => store.show(scope.requestId),
   }
 }
 

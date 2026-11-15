@@ -1,4 +1,4 @@
-export type RequestState = 'queued' | 'claimed' | 'done' | 'failed' | 'cancelled'
+export type RequestState = 'queued' | 'claimed' | 'review' | 'done' | 'failed' | 'cancelled'
 
 export interface RequestedBy { kind: 'member' | 'person'; id: string; name?: string }
 
@@ -18,6 +18,12 @@ export interface AgentRequest<M extends string = string> {
   tokenHash?: string
   verbs: string[]
   result?: { line: string; link?: string }
+  /** Set when the agent has finished its part and the member must look: what it made, in one line. */
+  review?: { line: string; link?: string }
+  /** Unknown JSON the tile attached, cleaned by the host for this skill; at most PAYLOAD_MAX characters as JSON. */
+  payload?: unknown
+  /** How long one claim lasts for this request; LEASE_MS when absent. */
+  leaseMs?: number
   createdAt: number
   settledAt?: number
 }
@@ -35,4 +41,5 @@ export interface TokenScope<M extends string = string> {
 export const LEASE_MS = 15 * 60_000
 export const MAX_ATTEMPTS = 3
 export const NOTE_MAX = 280
+export const PAYLOAD_MAX = 8 * 1024
 export const KEEP_MS = 30 * 24 * 3600_000

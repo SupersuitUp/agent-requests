@@ -235,4 +235,33 @@ describe('the agent requests API', () => {
       expect(s.db.docs.size).toBe(0)
     })
   })
+
+  it('review, settleByMember, renew and show work through the handlers, the token only on its own request', async () => {
+    const { h, onDone, host } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true, leaseMs: () => 7200_000, mayAsk: async () => true })
+    const filed = await own.askFor('ana', { kind: 'person', id: 'p1' }, { tile: 'door', skill: 'write-a-reflection', payload: { q: 1 } })
+    const [c] = (await (await own.agent.GET(req('GET'))).json()).requests
+    expect(c.leaseMs).toBe(7200_000)
+    const scope = (await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` })))!
+    expect(await own.show(scope)).toMatchObject({ id: filed.id, payload: { q: 1 }, subject: { id: filed.id } })
+    expect((await own.renew(scope)).leaseMs).toBe(7200_000)
+    expect(await own.toReview(scope, { line: 'ready' })).toMatchObject({ state: 'review' })
+    expect(await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` }))).toBeNull()
+    expect(await own.mine('ana', { kind: 'person', id: 'p2' })).toMatchObject({ requests: [] })
+    await expect(own.settleByMember('ana', filed.id, { state: 'bad' as never, line: 'x' })).rejects.toMatchObject({ status: 400 })
+    expect(await own.settleByMember('ana', filed.id, { state: 'done', line: 'Posted' })).toMatchObject({ state: 'done' })
+    expect(onDone).toHaveBeenCalledTimes(1)
+    void h
+  })
+
+  it('the agent POST settles a request in review with the agent key', async () => {
+    const { h, host } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true })
+    const r = await (await own.member.POST(req('POST', { tile: 'door', skill: 'write-a-reflection' }))).json()
+    const [c] = (await (await own.agent.GET(req('GET'))).json()).requests
+    const scope = (await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` })))!
+    await own.toReview(scope, { line: 'ready' })
+    expect((await own.agent.POST(req('POST', { state: 'done', result: 'Posted' }), params(r.id))).status).toBe(200)
+    void h
+  })
 })

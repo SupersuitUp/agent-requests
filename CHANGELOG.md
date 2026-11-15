@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 (2026-11-15)
+
+- A request can now wait for a look. The agent moves a claimed request to the new `review` state with one line (and a link) saying what is ready. Its token stops working and its lease is cleared. The member's own agent key then closes it as `done` or `failed` with `settleByMember`. A request token can never do this.
+- Long jobs can keep their claim. A request carries its own lease length, set when it is asked from the host's `leaseMs(tile, skill)`, and the claim answer says it. `renew` extends a claimed lease, so a three-hour job is never claimed twice.
+- A request can carry a `payload` of up to 8 KB of JSON. A payload over the limit is refused with 400. The host's `checkPayload(skill, payload)` checks and cleans it for each skill. The new `show` returns the payload and note of the token's own request, and nothing else.
+- New host option `ownSubject`. When true, every ask is its own subject and its own row, so a second ask from the same person is never merged into the first. Callers pass only the tile. The default keeps the 0.1 behavior.
+- `mine(member, requestedBy)` can list only the requests one asker made, so a page can show each person only their own. The member's phone list is unchanged.
+- The root and server entries export the new rules (`renew`, `toReview`, `settleByMember`, `byRequester`, `assertPayloadSize`) and `PAYLOAD_MAX`. The `RequestState` type now includes `review`, so code that switches on every state needs a case for it.
+
 ## 0.1.2 (2026-11-14)
 
 - A person whose id matches the member's id no longer merges into the member's own open request. A repeat ask now needs the same skill, item, kind of asker and id.

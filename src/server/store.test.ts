@@ -8,11 +8,11 @@ import { KEEP_MS, LEASE_MS } from '../types.js'
 type M = 'ana' | 'ben'
 const decl = { 'write-a-reflection': ['reflections.show', 'reflections.revise'] }
 
-function setup(owns?: (m: M, tile: string, id: string) => Promise<boolean>) {
+function setup(owns?: (m: M, tile: string, id: string) => Promise<boolean>, extra: Record<string, unknown> = {}) {
   const db = createFirestore()
   let t = 1_000_000
   const clock = { now: () => t, set: (n: number) => { t = n } }
-  const store = createAgentRequestsStore<M>({ db: () => db as unknown as Firestore, collection: 'reqs', decl: () => decl, now: clock.now, ownsSubject: owns })
+  const store = createAgentRequestsStore<M>({ db: () => db as unknown as Firestore, collection: 'reqs', decl: () => decl, now: clock.now, ownsSubject: owns, ...extra })
   return { db, store, clock }
 }
 const ask = (store: ReturnType<typeof setup>['store'], m: M, id = 'x1') => store.ask(m, { tile: 'reflections', id, skill: 'write-a-reflection' })
@@ -154,5 +154,57 @@ describe('the request store', () => {
     await expect(store.ask('ana', { tile: long(65), id: 'x', skill: 'write-a-reflection' })).rejects.toMatchObject({ status: 400 })
     await expect(store.ask('ana', { tile: 'reflections', id: 'x', skill: long(65) })).rejects.toMatchObject({ status: 400 })
     await expect(store.ask('ana', { tile: 'reflections', id: long(129), skill: 'write-a-reflection' })).rejects.toMatchObject({ status: 400 })
+  })
+
+  it('with ownSubject two asks from one person are two rows, each its own subject', async () => {
+    const { db, store } = setup(undefined, { ownSubject: true })
+    const a = await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' }, { kind: 'person', id: 'p1' })
+    const b = await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' }, { kind: 'person', id: 'p1' })
+    expect(b.id).not.toBe(a.id)
+    expect(a.subject.id).toBe(a.id)
+    expect(db.docs.size).toBe(2)
+  })
+
+  it('stores a payload the host cleaned, refuses one over 8 KB, and writes nothing then', async () => {
+    const { db, store } = setup(undefined, { checkPayload: (_s: string, p: { url: string }) => ({ url: p.url.trim() }) })
+    const r = await store.ask('ana', { tile: 'reflections', id: 'x1', skill: 'write-a-reflection', payload: { url: ' https://y.example ', junk: 1 } })
+    expect(db.peek('reqs', r.id)?.payload).toEqual({ url: 'https://y.example' })
+    await expect(store.ask('ana', { tile: 'reflections', id: 'x2', skill: 'write-a-reflection', payload: { url: 'a'.repeat(9000) } })).rejects.toMatchObject({ status: 400 })
+    expect(db.docs.size).toBe(1)
+  })
+
+  it('the lease comes from the host per type, the claim says it, and renew moves it', async () => {
+    const { db, store, clock } = setup(undefined, { leaseMs: () => 3 * 3600_000 })
+    const r = await ask(store, 'ana')
+    const [c] = await store.agentPoll('ana')
+    expect(c.leaseMs).toBe(3 * 3600_000)
+    expect(db.peek('reqs', r.id)?.leaseUntil).toBe(clock.now() + 3 * 3600_000)
+    clock.set(clock.now() + 3600_000)
+    await store.renew(r.id)
+    expect(db.peek('reqs', r.id)?.leaseUntil).toBe(clock.now() + 3 * 3600_000)
+    expect(await store.scopeForToken(c.token)).not.toBeNull()
+  })
+
+  it('review ends the token and clears the lease; the member key then settles it; show reads only payload fields', async () => {
+    const { db, store } = setup(undefined, { ownSubject: true })
+    const r = await store.ask('ana', { tile: 'door', skill: 'write-a-reflection', note: 'hi', payload: { a: 1 } }, { kind: 'person', id: 'p1' })
+    const [c] = await store.agentPoll('ana')
+    expect(await store.show(r.id)).toEqual({ id: r.id, skill: 'write-a-reflection', subject: { tile: 'door', id: r.id }, payload: { a: 1 }, note: 'hi', requestedBy: { kind: 'person', id: 'p1' } })
+    await store.toReview(r.id, { line: 'Clip ready' })
+    expect(db.peek('reqs', r.id)).toMatchObject({ state: 'review', review: { line: 'Clip ready' } })
+    expect(db.peek('reqs', r.id)).not.toHaveProperty('tokenHash')
+    expect(db.peek('reqs', r.id)).not.toHaveProperty('leaseUntil')
+    expect(await store.scopeForToken(c.token)).toBeNull()
+    await expect(store.settleByMember('ben', r.id, { state: 'done', line: 'x' })).rejects.toMatchObject({ status: 404 })
+    expect(await store.settleByMember('ana', r.id, { state: 'done', line: 'Posted' })).toMatchObject({ state: 'done', result: { line: 'Posted' } })
+    await expect(store.settleByMember('ana', r.id, { state: 'done', line: 'again' })).rejects.toMatchObject({ status: 409 })
+  })
+
+  it('mine by requester excludes other people', async () => {
+    const { store } = setup(undefined, { ownSubject: true })
+    await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' }, { kind: 'person', id: 'p1' })
+    await store.ask('ana', { tile: 'door', skill: 'write-a-reflection' }, { kind: 'person', id: 'p2' })
+    expect((await store.mine('ana', { kind: 'person', id: 'p1' })).requests).toHaveLength(1)
+    expect((await store.mine('ana')).requests).toHaveLength(2)
   })
 })

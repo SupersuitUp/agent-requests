@@ -21,6 +21,12 @@ export interface AgentRequestsHost<M extends string> {
    * without it `askFor` refuses every call. The app authenticates the person before calling `askFor`. `subject` is the item asked about, so a host can allow a person on one item and not another. If it throws, `askFor` throws too.
    */
   mayAsk?(member: M, by: { kind: 'person'; id: string }, skill: string, subject: { tile: string; id: string }): Promise<boolean>
+  /** Per type: how long one claim lasts, in ms (a long job asks for hours). Left out or undefined: LEASE_MS. */
+  leaseMs?(tile: string, skill: string): number | undefined
+  /** Checks and cleans a request's payload for this skill, and returns what is stored. Throw a RequestRefusal (400) on a bad one. Called only when a payload is sent, after the 8 KB cap. */
+  checkPayload?(skill: string, payload: unknown): unknown | Promise<unknown>
+  /** When true, every ask is its own subject: the subject id is the new request's id (callers pass only the tile), and a second ask is never merged into an open one. Default false. */
+  ownSubject?: boolean
   /** Called once when a request is settled `done`, never on `failed`: the app posts its news item here. */
   onDone?(r: AgentRequest<M>): Promise<void>
   now?(): number

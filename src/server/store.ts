@@ -1,13 +1,13 @@
 import 'server-only'
 import type { DocumentSnapshot } from 'firebase-admin/firestore'
 import { RequestRefusal } from '../errors.js'
-import { cancel, claim, expireLeases, newRequest, release, settle } from '../rules.js'
+import { assertPayloadSize, byRequester, cancel, claim, expireLeases, newRequest, release, renew, settle, settleByMember, toReview } from '../rules.js'
 import { hashToken, mintToken } from './token.js'
-import { KEEP_MS, type AgentRequest, type RequestedBy, type TokenScope } from '../types.js'
+import { KEEP_MS, LEASE_MS, type AgentRequest, type RequestedBy, type TokenScope } from '../types.js'
 import type { AgentRequestsHost } from './host.js'
 
-type StoreHost<M extends string> = Pick<AgentRequestsHost<M>, 'db' | 'collection' | 'decl' | 'now' | 'ownsSubject'>
-export interface Claimed { id: string; skill: string; subject: { tile: string; id: string }; note?: string; requestedBy?: RequestedBy; token: string }
+type StoreHost<M extends string> = Pick<AgentRequestsHost<M>, 'db' | 'collection' | 'decl' | 'now' | 'ownsSubject' | 'ownSubject' | 'leaseMs' | 'checkPayload'>
+export interface Claimed { id: string; skill: string; subject: { tile: string; id: string }; note?: string; requestedBy?: RequestedBy; leaseMs: number; token: string }
 
 // Firestore refuses undefined, and a rule clears a field by setting it undefined: dropping it here removes it.
 const forStore = <M extends string>(r: AgentRequest<M>): Record<string, unknown> => {
@@ -31,14 +31,19 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
   const retired = (r: AgentRequest<M>, t: number) => r.settledAt !== undefined && t - r.settledAt > KEEP_MS
 
   // A second tap on the same skill and subject returns the request already open (queued or claimed).
-  async function ask(member: M, a: { tile: string; id: string; skill: string; note?: string }, by?: RequestedBy): Promise<AgentRequest<M>> {
+  // With the host's `ownSubject` on, every ask is its own subject and its own row.
+  async function ask(member: M, a: { tile: string; id?: string; skill: string; note?: string; payload?: unknown }, by?: RequestedBy): Promise<AgentRequest<M>> {
     const requestedBy: RequestedBy = by ?? { kind: 'member', id: member }
     const ref = rows().doc()
-    const r = newRequest({ id: ref.id, member, skill: a.skill, subject: { tile: a.tile, id: a.id }, note: a.note, requestedBy, decl: host.decl(a.tile), now: now() })
-    if (host.ownsSubject && !(await host.ownsSubject(member, a.tile, a.id))) throw new RequestRefusal('not found', 404)
+    const own = host.ownSubject === true
+    assertPayloadSize(a.payload)
+    const payload = a.payload !== undefined && host.checkPayload ? await host.checkPayload(a.skill, a.payload) : a.payload
+    const r = newRequest({ id: ref.id, member, skill: a.skill, subject: { tile: a.tile, id: a.id }, note: a.note, requestedBy, decl: host.decl(a.tile), now: now(), payload, leaseMs: host.leaseMs?.(a.tile, a.skill), ownSubject: own })
+    if (!own && host.ownsSubject && !(await host.ownsSubject(member, a.tile, r.subject.id))) throw new RequestRefusal('not found', 404)
+    if (own) { await ref.set(forStore(r)); return r }
     return host.db().runTransaction(async (tx) => {
       const snap = await tx.get(rows().where('member', '==', member))
-      const open = snap.docs.map(from).find((x) => (x.state === 'queued' || x.state === 'claimed') && x.skill === a.skill && x.subject.id === a.id && (x.requestedBy?.kind ?? 'member') === requestedBy.kind && (x.requestedBy?.id ?? member) === requestedBy.id)
+      const open = snap.docs.map(from).find((x) => (x.state === 'queued' || x.state === 'claimed') && x.skill === a.skill && x.subject.id === r.subject.id && (x.requestedBy?.kind ?? 'member') === requestedBy.kind && (x.requestedBy?.id ?? member) === requestedBy.id)
       if (open) return open
       tx.set(ref, forStore(r))
       return r
@@ -74,7 +79,7 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
         const token = mintToken()
         r = claim(r, { now: t, tokenHash: hashToken(token) })
         tx.set(doc.ref, forStore(r))
-        out.push({ id: r.id, skill: r.skill, subject: r.subject, ...(r.note ? { note: r.note } : {}), ...(r.requestedBy ? { requestedBy: r.requestedBy } : {}), token })
+        out.push({ id: r.id, skill: r.skill, subject: r.subject, ...(r.note ? { note: r.note } : {}), ...(r.requestedBy ? { requestedBy: r.requestedBy } : {}), leaseMs: r.leaseMs ?? LEASE_MS, token })
       }
       return out
     })
@@ -88,10 +93,48 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
       const doc = await tx.get(ref)
       if (!doc.exists || from(doc).member !== member) throw new RequestRefusal('not found', 404)
       const r0 = expireLeases([from(doc)], t)[0]
-      const r = a.state === 'released' ? release(r0) : settle(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
+      const r = a.state === 'released' ? release(r0)
+        : r0.state === 'review' ? settleByMember(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
+        : settle(r0, { state: a.state, line: a.result ?? '', link: a.link, now: t })
       tx.set(ref, forStore(r))
       return r
     })
+  }
+
+  // The member's agent key closes a request in review (or a claimed one): done or failed.
+  async function settleByMemberKey(member: M, id: string, a: { state: 'done' | 'failed'; line: string; link?: string }): Promise<AgentRequest<M>> {
+    const ref = rows().doc(id)
+    const t = now()
+    return host.db().runTransaction(async (tx) => {
+      const doc = await tx.get(ref)
+      if (!doc.exists || from(doc).member !== member) throw new RequestRefusal('not found', 404)
+      const r = settleByMember(expireLeases([from(doc)], t)[0], { ...a, now: t })
+      tx.set(ref, forStore(r))
+      return r
+    })
+  }
+
+  // Moves for the request a live token belongs to. The caller got the id from scopeForToken, so the token is already checked.
+  async function moveOwn(id: string, fn: (r: AgentRequest<M>, t: number) => AgentRequest<M>): Promise<AgentRequest<M>> {
+    const ref = rows().doc(id)
+    const t = now()
+    return host.db().runTransaction(async (tx) => {
+      const doc = await tx.get(ref)
+      if (!doc.exists) throw new RequestRefusal('not found', 404)
+      const r = fn(expireLeases([from(doc)], t)[0], t)
+      tx.set(ref, forStore(r))
+      return r
+    })
+  }
+  const renewOwn = (id: string) => moveOwn(id, (r, t) => renew(r, t))
+  const toReviewOwn = (id: string, a: { line: string; link?: string }) => moveOwn(id, (r) => toReview(r, a))
+
+  // What the token's own request is about, and nothing else.
+  async function showOwn(id: string) {
+    const doc = await rows().doc(id).get()
+    if (!doc.exists) throw new RequestRefusal('not found', 404)
+    const r = from(doc)
+    return { id: r.id, skill: r.skill, subject: r.subject, payload: r.payload, note: r.note, requestedBy: r.requestedBy }
   }
 
   // The request token's scope: the token must hash to a claimed request whose lease has not run out.
@@ -105,16 +148,16 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
   }
 
   // This person's requests, newest first, and when their suit last asked (ms, or null).
-  async function mine(member: M): Promise<{ requests: AgentRequest<M>[]; suitSeenAt: number | null }> {
+  async function mine(member: M, requestedBy?: { kind: 'member' | 'person'; id: string }): Promise<{ requests: AgentRequest<M>[]; suitSeenAt: number | null }> {
     const t = now()
     const snap = await rows().where('member', '==', member).get()
-    const list = expireLeases(snap.docs.map(from).filter((r) => !retired(r, t)), t)
+    const list = byRequester(expireLeases(snap.docs.map(from).filter((r) => !retired(r, t)), t), requestedBy)
     const s = await seen().doc(member).get()
     const at = s.exists ? (s.data() as { at?: unknown }).at : undefined
     return { requests: list.map(forPerson).sort((a, b) => b.createdAt - a.createdAt), suitSeenAt: typeof at === 'number' ? at : null }
   }
 
-  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, scopeForToken, mine }
+  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, settleByMember: settleByMemberKey, renew: renewOwn, toReview: toReviewOwn, show: showOwn, scopeForToken, mine }
 }
 
 export type AgentRequestsStore<M extends string> = ReturnType<typeof createAgentRequestsStore<M>>
