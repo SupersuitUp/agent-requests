@@ -276,6 +276,44 @@ describe('the agent requests API', () => {
     expect(db.peek('reqs', r.id)).toMatchObject({ state: 'review' })
   })
 
+  it('agent POST { op: "status" } answers the state for queued, claimed, review and done', async () => {
+    const { host } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true })
+    const r = await (await own.member.POST(req('POST', { tile: 'door', skill: 'write-a-reflection' }))).json()
+    const status = async () => { const res = await own.agent.POST(req('POST', { op: 'status' }), params(r.id)); return [res.status, await res.json()] }
+    expect(await status()).toEqual([200, { state: 'queued' }])
+    const [c] = (await (await own.agent.GET(req('GET'))).json()).requests
+    expect(await status()).toEqual([200, { state: 'claimed' }])
+    const scope = (await own.scopeFor(req('GET', undefined, { authorization: `Bearer ${c.token}` })))!
+    await own.toReview(scope, { line: 'ready' })
+    expect(await status()).toEqual([200, { state: 'review' }])
+    await own.agent.POST(req('POST', { state: 'done', result: 'Posted' }), params(r.id))
+    expect(await status()).toEqual([200, { state: 'done' }])
+  })
+
+  it('status refuses a request token (no agent key) with 401 and changes nothing', async () => {
+    const { host, db } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true })
+    const r = await (await own.member.POST(req('POST', { tile: 'door', skill: 'write-a-reflection' }))).json()
+    const [c] = (await (await own.agent.GET(req('GET'))).json()).requests
+    const tokenOnly = createAgentRequestsHandlers<M>({ ...host, ownSubject: true, agentMember: async (q) => (q.headers.get('authorization') === 'Bearer agent-key' ? 'ana' : null) })
+    const res = await tokenOnly.agent.POST(req('POST', { op: 'status' }, { authorization: `Bearer ${c.token}` }), params(r.id))
+    expect(res.status).toBe(401)
+    expect(db.peek('reqs', r.id)).toMatchObject({ state: 'claimed' })
+  })
+
+  it("status answers 404 for another member's request and for a missing id, the same way", async () => {
+    const { host } = setup()
+    const own = createAgentRequestsHandlers<M>({ ...host, ownSubject: true })
+    const r = await (await own.member.POST(req('POST', { tile: 'door', skill: 'write-a-reflection' }))).json()
+    const ben = createAgentRequestsHandlers<M>({ ...host, ownSubject: true, agentMember: async () => 'ben' })
+    const other = await ben.agent.POST(req('POST', { op: 'status' }), params(r.id))
+    const missing = await own.agent.POST(req('POST', { op: 'status' }), params('nope'))
+    expect(other.status).toBe(404)
+    expect(missing.status).toBe(404)
+    expect(await other.json()).toEqual(await missing.json())
+  })
+
   it('settleByMember answers 401 without the member agent key', async () => {
     const { host } = setup('ana', null)
     const own = createAgentRequestsHandlers<M>(host)

@@ -145,6 +145,13 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
   }
 
   // The request token's scope: the token must hash to a claimed request whose lease has not run out.
+  // The state of one of the member's own requests. Another member's and a missing id answer the same 404.
+  async function stateOf(member: M, id: string): Promise<AgentRequest<M>['state']> {
+    const doc = await rows().doc(id).get()
+    if (!doc.exists || from(doc).member !== member) throw new RequestRefusal('not found', 404)
+    return expireLeases([from(doc)], now())[0].state
+  }
+
   async function scopeForToken(token: string): Promise<TokenScope<M> | null> {
     const snap = await rows().where('tokenHash', '==', hashToken(token)).get()
     const doc = snap.docs[0]
@@ -164,7 +171,7 @@ export function createAgentRequestsStore<M extends string>(host: StoreHost<M>) {
     return { requests: list.map(forPerson).sort((a, b) => b.createdAt - a.createdAt), suitSeenAt: typeof at === 'number' ? at : null }
   }
 
-  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, settleByToken, settleByMember: settleByMemberKey, renew: renewOwn, toReview: toReviewOwn, show: showOwn, scopeForToken, mine }
+  return { ask, cancel: cancelRequest, agentPoll, settleByAgent, settleByToken, settleByMember: settleByMemberKey, renew: renewOwn, toReview: toReviewOwn, show: showOwn, stateOf, scopeForToken, mine }
 }
 
 export type AgentRequestsStore<M extends string> = ReturnType<typeof createAgentRequestsStore<M>>

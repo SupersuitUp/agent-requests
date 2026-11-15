@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 (2026-11-15)
+
+- New agent-key op: `POST /api/agent/requests/<id>` with `{ op: "status" }` answers `{ state }` for the member's own request. A request token is refused (401), and another member's or a missing id answers 404 the same way.
+
 ## 0.2.1 (2026-11-15)
 
 - A request token can no longer close a request that is in review. `settleAs` closes only a claimed request and answers 409 on a request in review. Only the member's agent key can close one.

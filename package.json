@@ -1,6 +1,6 @@
 {
   "name": "@supersuit/agent-requests",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A queue of requests from a continent app to its member's agent: a lease, a scoped request token, and Next.js route handlers on Firestore, for any app that says who is signed in and where requests are kept.",
   "type": "module",
   "exports": {

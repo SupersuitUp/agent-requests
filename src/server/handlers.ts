@@ -65,7 +65,8 @@ export function createAgentRequestsHandlers<M extends string>(host: AgentRequest
       GET: (req: Request) => handle(async () => Response.json({ requests: await store.agentPoll(await agent(req)) })),
       POST: (req: Request, { params }: IdParams) => handle(async () => {
         const m = await agent(req)
-        const body = (await req.json()) as { state?: unknown; result?: unknown; link?: unknown } | null
+        const body = (await req.json()) as { op?: unknown; state?: unknown; result?: unknown; link?: unknown } | null
+        if (body?.op === 'status') return Response.json({ state: await store.stateOf(m, (await params).id) })
         const state = body?.state
         if (state !== 'done' && state !== 'failed' && state !== 'released') throw new RequestRefusal('state must be done, failed or released', 400)
         const result = typeof body?.result === 'string' ? body.result : undefined
